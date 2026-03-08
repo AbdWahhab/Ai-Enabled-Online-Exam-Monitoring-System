@@ -24,22 +24,27 @@ function App() {
   const [examStarted, setExamStarted] = useState(false);
   const [suspicionScore, setSuspicionScore] = useState(0);
 
-  // NEW: exams dropdown + attempt id
   const [exams, setExams] = useState([]);
   const [selectedExamId, setSelectedExamId] = useState("");
+  const [selectedExamTitle, setSelectedExamTitle] = useState("");
   const [attemptId, setAttemptId] = useState(null);
+
+  // ✅ NEW: questions + selected answers
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState({});
 
   const intervalRef = useRef(null);
   const isVerifying = useRef(false);
 
-  // ✅ Load exams on page load
+  // Load exams on page load
   useEffect(() => {
     const loadExams = async () => {
       try {
         const res = await axios.get(`${API_BASE}/api/exams/`);
         setExams(res.data || []);
         if (res.data?.length) {
-          setSelectedExamId(String(res.data[0].id)); // auto-select first exam
+          setSelectedExamId(String(res.data[0].id));
+          setSelectedExamTitle(res.data[0].title);
         }
       // eslint-disable-next-line no-unused-vars
       } catch (e) {
@@ -82,13 +87,17 @@ function App() {
       const file = new File([blob], "live_photo.jpg", { type: "image/jpeg" });
 
       const formData = new FormData();
-      formData.append("attempt_id", String(attemptId)); // ✅ NEW (proper)
-      formData.append("user_id", TEST_USER_ID); // fallback safe
+      formData.append("attempt_id", String(attemptId));
+      formData.append("user_id", TEST_USER_ID);
       formData.append("live_image", file);
 
-      const response = await axios.post(`${API_BASE}/api/face-verify/`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const response = await axios.post(
+        `${API_BASE}/api/face-verify/`,
+        formData,
+        {
+          headers: { "Content-Type": "multipart/form-data" },
+        }
+      );
 
       const data = response.data;
       setResult(data);
@@ -97,7 +106,9 @@ function App() {
         setSuspicionScore(data.suspicion_total);
       }
     } catch (err) {
-      setError(err.response?.data?.error || "Verification failed - check console");
+      setError(
+        err.response?.data?.error || "Verification failed - check console"
+      );
     } finally {
       setLoading(false);
       isVerifying.current = false;
@@ -119,7 +130,7 @@ function App() {
     return () => clearInterval(intervalRef.current);
   }, [examStarted, capture]);
 
-  // ✅ Start exam properly: create attempt
+  // ✅ Start exam + load questions
   const startExam = async () => {
     if (!selectedExamId) {
       setError("Please select an exam first.");
@@ -131,6 +142,12 @@ function App() {
     setResult(null);
 
     try {
+      const selectedExam = exams.find(
+        (ex) => String(ex.id) === String(selectedExamId)
+      );
+      setSelectedExamTitle(selectedExam?.title || "Selected Exam");
+
+      // 1. start attempt
       const res = await axios.post(`${API_BASE}/api/attempts/start/`, {
         user_id: TEST_USER_ID,
         exam_id: selectedExamId,
@@ -139,6 +156,13 @@ function App() {
       setAttemptId(res.data.attempt_id);
       setExamStarted(true);
       setSuspicionScore(res.data.suspicion_score ?? 0);
+
+      // 2. fetch questions
+      const qRes = await axios.get(
+        `${API_BASE}/api/exams/${selectedExamId}/questions/`
+      );
+      setQuestions(qRes.data.questions || []);
+      setAnswers({});
     } catch (e) {
       setError(e.response?.data?.error || "Failed to start attempt");
     } finally {
@@ -148,7 +172,7 @@ function App() {
 
   const stopExam = async () => {
     if (!attemptId) return;
-  
+
     try {
       await axios.post(`${API_BASE}/api/attempts/end/`, {
         attempt_id: attemptId,
@@ -156,10 +180,20 @@ function App() {
     } catch (e) {
       console.error("Failed to end attempt:", e);
     }
-  
+
     setExamStarted(false);
     clearInterval(intervalRef.current);
     setAttemptId(null);
+    setQuestions([]);
+    setAnswers({});
+  };
+
+  // ✅ NEW: answer selection handler
+  const handleOptionSelect = (questionId, optionValue) => {
+    setAnswers((prev) => ({
+      ...prev,
+      [questionId]: optionValue,
+    }));
   };
 
   const statusBadge = () => {
@@ -186,7 +220,9 @@ function App() {
       <div className="header">
         <div className="titleBlock">
           <h1>AI Examination Monitoring System</h1>
-          <p>Live proctoring demo (Face + Object detection + Suspicion scoring)</p>
+          <p>
+            Live proctoring demo (Face + Object detection + Suspicion scoring)
+          </p>
         </div>
 
         <div className="row">
@@ -200,24 +236,21 @@ function App() {
         <div className="card">
           <h2 className="cardTitle">Live Camera</h2>
           <p className="muted">
-            Select an exam, start attempt, then monitoring will run automatically.
+            Select an exam, start attempt, then monitoring will run
+            automatically.
           </p>
 
-          {/* NEW: Exam dropdown */}
           {!examStarted && (
             <div style={{ marginTop: 10 }}>
               <p className="kpiLabel">Select Exam</p>
               <select
                 value={selectedExamId}
-                onChange={(e) => setSelectedExamId(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#e2e8f0",
-                  outline: "none",
+                onChange={(e) => {
+                  setSelectedExamId(e.target.value);
+                  const selected = exams.find(
+                    (ex) => String(ex.id) === e.target.value
+                  );
+                  setSelectedExamTitle(selected?.title || "");
                 }}
               >
                 {exams.map((ex) => (
@@ -273,7 +306,8 @@ function App() {
 
           {examStarted && suspicionScore >= 30 && (
             <div className="notice warn">
-              ⚠️ Suspicion is high. Please keep only one person in the frame and avoid phones/books.
+              ⚠️ Suspicion is high. Please keep only one person in the frame and
+              avoid phones/books.
             </div>
           )}
         </div>
@@ -290,7 +324,9 @@ function App() {
             <div className="kpiItem">
               <p className="kpiLabel">People Detected</p>
               <p className="kpiValue">
-                {typeof result?.person_count === "number" ? result.person_count : "—"}
+                {typeof result?.person_count === "number"
+                  ? result.person_count
+                  : "—"}
               </p>
             </div>
           </div>
@@ -299,7 +335,9 @@ function App() {
             <div className="kpiItem">
               <p className="kpiLabel">Face Distance</p>
               <p className="kpiValue">
-                {typeof result?.distance === "number" ? result.distance.toFixed(4) : "—"}
+                {typeof result?.distance === "number"
+                  ? result.distance.toFixed(4)
+                  : "—"}
               </p>
               <p className="small">Lower is better (match)</p>
             </div>
@@ -331,6 +369,58 @@ function App() {
           )}
         </div>
       </div>
+
+      {/* ✅ NEW: Questions Section */}
+      {examStarted && (
+        <div className="card questionSection">
+          <div className="questionHeader">
+            <div>
+              <h2 className="cardTitle">Exam Questions</h2>
+              <p className="muted">{selectedExamTitle || "Selected Exam"}</p>
+            </div>
+            <span className="badge">{questions.length} Questions</span>
+          </div>
+
+          {questions.length === 0 ? (
+            <p className="muted">No questions found for this exam.</p>
+          ) : (
+            <div className="questionList">
+              {questions.map((question, index) => (
+                <div key={question.id} className="questionCard">
+                  <p className="questionNumber">Question {index + 1}</p>
+                  <h3 className="questionText">{question.question_text}</h3>
+
+                  {question.question_type === "MCQ" &&
+                    Array.isArray(question.options) && (
+                      <div className="optionList">
+                        {question.options.map((option, optionIndex) => (
+                          <label key={optionIndex} className="optionItem">
+                            <input
+                              type="radio"
+                              name={`question-${question.id}`}
+                              value={option}
+                              checked={answers[question.id] === option}
+                              onChange={() =>
+                                handleOptionSelect(question.id, option)
+                              }
+                            />
+                            <span>{option}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+
+                  {answers[question.id] && (
+                    <p className="selectedAnswer">
+                      Selected Answer: <strong>{answers[question.id]}</strong>
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
