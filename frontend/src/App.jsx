@@ -11,17 +11,21 @@ const videoConstraints = {
 
 const API_BASE = "http://127.0.0.1:8000";
 const TEST_USER_ID = "2";
+const FLAG_THRESHOLD = 50;
+const WARNING_THRESHOLD = 30;
 
 function App() {
   const webcamRef = useRef(null);
 
   const [imgSrc, setImgSrc] = useState(null);
   const [result, setResult] = useState(null);
+  const [consecutiveFaceMismatches, setConsecutiveFaceMismatches] = useState(0);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const [examStarted, setExamStarted] = useState(false);
+  const [examStatus, setExamStatus] = useState("not_started"); // not_started | ongoing | submitted | flagged
   const [suspicionScore, setSuspicionScore] = useState(0);
 
   const [exams, setExams] = useState([]);
@@ -29,14 +33,12 @@ function App() {
   const [selectedExamTitle, setSelectedExamTitle] = useState("");
   const [attemptId, setAttemptId] = useState(null);
 
-  // ✅ NEW: questions + selected answers
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
 
   const intervalRef = useRef(null);
   const isVerifying = useRef(false);
 
-  // Load exams on page load
   useEffect(() => {
     const loadExams = async () => {
       try {
@@ -46,11 +48,11 @@ function App() {
           setSelectedExamId(String(res.data[0].id));
           setSelectedExamTitle(res.data[0].title);
         }
-      // eslint-disable-next-line no-unused-vars
-      } catch (e) {
+      } catch {
         setError("Failed to load exams. Check backend is running.");
       }
     };
+
     loadExams();
   }, []);
 
@@ -58,12 +60,16 @@ function App() {
     const imageSrc = webcamRef.current?.getScreenshot();
     if (imageSrc) {
       setImgSrc(imageSrc);
-      setResult(null);
-      setError(null);
       return imageSrc;
     }
     return null;
   }, []);
+
+  const getReviewStatus = (score) => {
+    if (score >= FLAG_THRESHOLD) return "Flagged for review";
+    if (score >= WARNING_THRESHOLD) return "Warning";
+    return "Safe";
+  };
 
   const verifyFace = async (imageSrc) => {
     if (!imageSrc) {
@@ -88,7 +94,7 @@ function App() {
 
       const formData = new FormData();
       formData.append("attempt_id", String(attemptId));
-      formData.append("user_id", TEST_USER_ID);
+      formData.append("user_id", TEST_USER_ID); // fallback for now
       formData.append("live_image", file);
 
       const response = await axios.post(
@@ -100,10 +106,32 @@ function App() {
       );
 
       const data = response.data;
-      setResult(data);
+
+      // Only update result as proctoring result if this is not final exam result payload
+      if (data.score === undefined) {
+        setResult(data);
+      }
 
       if (typeof data.suspicion_total === "number") {
         setSuspicionScore(data.suspicion_total);
+
+        if (data.suspicion_total >= FLAG_THRESHOLD) {
+          setExamStatus("flagged");
+        } else if (examStarted) {
+          setExamStatus("ongoing");
+        }
+      }
+
+      if (data.verified === false) {
+        setConsecutiveFaceMismatches((prev) => {
+          const next = prev + 1;
+          if (next >= 3) {
+            setExamStatus("flagged");
+          }
+          return next;
+        });
+      } else if (data.verified === true) {
+        setConsecutiveFaceMismatches(0);
       }
     } catch (err) {
       setError(
@@ -115,7 +143,6 @@ function App() {
     }
   };
 
-  // Periodic verification while exam is running
   useEffect(() => {
     if (!examStarted) return;
 
@@ -130,7 +157,6 @@ function App() {
     return () => clearInterval(intervalRef.current);
   }, [examStarted, capture]);
 
-  // ✅ Start exam + load questions
   const startExam = async () => {
     if (!selectedExamId) {
       setError("Please select an exam first.");
@@ -147,7 +173,6 @@ function App() {
       );
       setSelectedExamTitle(selectedExam?.title || "Selected Exam");
 
-      // 1. start attempt
       const res = await axios.post(`${API_BASE}/api/attempts/start/`, {
         user_id: TEST_USER_ID,
         exam_id: selectedExamId,
@@ -155,9 +180,10 @@ function App() {
 
       setAttemptId(res.data.attempt_id);
       setExamStarted(true);
+      setExamStatus("ongoing");
       setSuspicionScore(res.data.suspicion_score ?? 0);
+      setConsecutiveFaceMismatches(0);
 
-      // 2. fetch questions
       const qRes = await axios.get(
         `${API_BASE}/api/exams/${selectedExamId}/questions/`
       );
@@ -181,14 +207,15 @@ function App() {
       console.error("Failed to end attempt:", e);
     }
 
-    setExamStarted(false);
     clearInterval(intervalRef.current);
+    setExamStarted(false);
+    setExamStatus("submitted");
     setAttemptId(null);
     setQuestions([]);
     setAnswers({});
+    setConsecutiveFaceMismatches(0);
   };
 
-  // ✅ NEW: answer selection handler
   const handleOptionSelect = (questionId, optionValue) => {
     setAnswers((prev) => ({
       ...prev,
@@ -196,23 +223,78 @@ function App() {
     }));
   };
 
+  const submitExam = async () => {
+    if (!attemptId) {
+      setError("No active attempt found.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const res = await axios.post(
+        `${API_BASE}/api/attempts/${attemptId}/submit-answers/`,
+        {
+          answers: answers,
+        }
+      );
+
+      setResult(res.data);
+      setSuspicionScore(res.data.suspicion_score ?? suspicionScore);
+
+      if ((res.data.suspicion_score ?? 0) >= FLAG_THRESHOLD) {
+        setExamStatus("flagged");
+      } else {
+        setExamStatus("submitted");
+      }
+
+      try {
+        await axios.post(`${API_BASE}/api/attempts/end/`, {
+          attempt_id: attemptId,
+        });
+      } catch (endErr) {
+        console.error("End attempt after submit failed:", endErr);
+      }
+
+      clearInterval(intervalRef.current);
+      setExamStarted(false);
+    } catch (e) {
+      console.error("Submit exam error:", e.response?.data || e.message);
+      setError(e.response?.data?.error || "Failed to submit answers");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const statusBadge = () => {
-    if (!examStarted) return <span className="badge">Exam: Not started</span>;
-    const high = suspicionScore >= 30;
-    return (
-      <span className={`badge ${high ? "bad" : "good"}`}>
-        Suspicion: {suspicionScore} {high ? "⚠️" : "✅"}
-      </span>
-    );
+    if (examStatus === "not_started") {
+      return <span className="badge">Exam: Not started</span>;
+    }
+    if (examStatus === "ongoing") {
+      return <span className="badge good">Exam: Ongoing</span>;
+    }
+    if (examStatus === "submitted") {
+      return <span className="badge good">Exam: Submitted</span>;
+    }
+    if (examStatus === "flagged") {
+      return <span className="badge bad">Exam: Flagged for review</span>;
+    }
+    return <span className="badge">Exam: Not started</span>;
   };
 
   const verificationBadge = () => {
-    if (!result) return null;
-    return (
-      <span className={`badge ${result.verified ? "good" : "bad"}`}>
-        {result.verified ? "Face Verified" : "Face Mismatch"}
-      </span>
-    );
+    if (!result || result.score !== undefined) return null;
+
+    if (result.verified === true) {
+      return <span className="badge good">Face Verified</span>;
+    }
+
+    if (result.verified === false) {
+      return <span className="badge bad">Face Mismatch</span>;
+    }
+
+    return null;
   };
 
   return (
@@ -232,7 +314,7 @@ function App() {
       </div>
 
       <div className="grid">
-        {/* LEFT */}
+        {/* LEFT CARD */}
         <div className="card">
           <h2 className="cardTitle">Live Camera</h2>
           <p className="muted">
@@ -240,7 +322,7 @@ function App() {
             automatically.
           </p>
 
-          {!examStarted && (
+          {!examStarted && examStatus === "not_started" && (
             <div style={{ marginTop: 10 }}>
               <p className="kpiLabel">Select Exam</p>
               <select
@@ -276,11 +358,11 @@ function App() {
           </div>
 
           <div className="controls">
-            {!examStarted ? (
+            {!examStarted && examStatus === "not_started" ? (
               <button className="btn" onClick={startExam} disabled={loading}>
                 {loading ? "Starting..." : "Start Exam"}
               </button>
-            ) : (
+            ) : examStarted ? (
               <>
                 <button className="btn danger" onClick={stopExam}>
                   End Exam
@@ -293,7 +375,7 @@ function App() {
                   {loading ? "Processing..." : "Manual Verify"}
                 </button>
               </>
-            )}
+            ) : null}
           </div>
 
           {attemptId && examStarted && (
@@ -304,23 +386,63 @@ function App() {
 
           {error && <div className="notice error">Error: {error}</div>}
 
-          {examStarted && suspicionScore >= 30 && (
+          {examStarted &&
+            suspicionScore >= WARNING_THRESHOLD &&
+            suspicionScore < FLAG_THRESHOLD && (
+              <div className="notice warn">
+                Warning: Suspicion is rising. Please keep only one person in the
+                frame and avoid phones/books.
+              </div>
+            )}
+
+          {examStarted && suspicionScore >= FLAG_THRESHOLD && (
+            <div className="notice error">
+              High suspicion detected. This exam will be flagged for admin
+              review.
+            </div>
+          )}
+
+          {examStarted && consecutiveFaceMismatches === 1 && (
             <div className="notice warn">
-              ⚠️ Suspicion is high. Please keep only one person in the frame and
-              avoid phones/books.
+              Face mismatch detected once. Please sit properly and look at the
+              camera.
+            </div>
+          )}
+
+          {examStarted && consecutiveFaceMismatches === 2 && (
+            <div className="notice warn">
+              Repeated face mismatch detected. Continued mismatch may flag this
+              exam.
+            </div>
+          )}
+
+          {examStarted && consecutiveFaceMismatches >= 3 && (
+            <div className="notice error">
+              Multiple consecutive face mismatches detected. This exam is
+              flagged for review.
             </div>
           )}
         </div>
 
-        {/* RIGHT */}
+        {/* RIGHT CARD */}
         <div className="card">
           <h2 className="cardTitle">Proctoring Status</h2>
 
           <div className="kpi">
             <div className="kpiItem">
               <p className="kpiLabel">Attempt Status</p>
-              <p className="kpiValue">{result?.attempt_status || "—"}</p>
+              <p className="kpiValue">
+                {result?.attempt_status ||
+                  (examStatus === "flagged"
+                    ? "flagged"
+                    : examStarted
+                    ? "ongoing"
+                    : examStatus === "submitted"
+                    ? "submitted"
+                    : "—")}
+              </p>
             </div>
+
             <div className="kpiItem">
               <p className="kpiLabel">People Detected</p>
               <p className="kpiValue">
@@ -341,10 +463,33 @@ function App() {
               </p>
               <p className="small">Lower is better (match)</p>
             </div>
+
             <div className="kpiItem">
               <p className="kpiLabel">Suspicion (Total)</p>
-              <p className="kpiValue">{suspicionScore}</p>
+              <p className="kpiValue">
+                {result?.suspicion_score !== undefined
+                  ? result.suspicion_score
+                  : suspicionScore}
+              </p>
               <p className="small">Saved to database per attempt</p>
+            </div>
+          </div>
+
+          <div className="kpi">
+            <div className="kpiItem">
+              <p className="kpiLabel">Face Mismatch Streak</p>
+              <p className="kpiValue">{consecutiveFaceMismatches}</p>
+            </div>
+
+            <div className="kpiItem">
+              <p className="kpiLabel">Review Status</p>
+              <p className="kpiValue" style={{ fontSize: "1.2rem" }}>
+                {getReviewStatus(
+                  result?.suspicion_score !== undefined
+                    ? result.suspicion_score
+                    : suspicionScore
+                )}
+              </p>
             </div>
           </div>
 
@@ -370,7 +515,7 @@ function App() {
         </div>
       </div>
 
-      {/* ✅ NEW: Questions Section */}
+      {/* QUESTIONS */}
       {examStarted && (
         <div className="card questionSection">
           <div className="questionHeader">
@@ -419,6 +564,80 @@ function App() {
               ))}
             </div>
           )}
+
+          <div style={{ marginTop: "20px", textAlign: "center" }}>
+            <button className="btn" onClick={submitExam} disabled={loading}>
+              {loading ? "Submitting..." : "Submit Exam"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* FINAL RESULT */}
+      {result && result.score !== undefined && (
+        <div className="card" style={{ marginTop: "2rem" }}>
+          <h2 className="cardTitle">Exam Result</h2>
+
+          <div className="kpi">
+            <div className="kpiItem">
+              <p className="kpiLabel">Student</p>
+              <p className="kpiValue">{result.student_username}</p>
+            </div>
+
+            <div className="kpiItem">
+              <p className="kpiLabel">Exam</p>
+              <p className="kpiValue">{result.exam_title}</p>
+            </div>
+          </div>
+
+          <div className="kpi">
+            <div className="kpiItem">
+              <p className="kpiLabel">Score</p>
+              <p className="kpiValue">
+                {result.score} / {result.total_questions}
+              </p>
+            </div>
+
+            <div className="kpiItem">
+              <p className="kpiLabel">Percentage</p>
+              <p className="kpiValue">{result.percentage}%</p>
+            </div>
+
+            <div className="kpiItem">
+              <p className="kpiLabel">Suspicion Score</p>
+              <p className="kpiValue">{result.suspicion_score}</p>
+            </div>
+          </div>
+
+          <div className="kpi">
+            <div className="kpiItem">
+              <p className="kpiLabel">Final Exam Status</p>
+              <p className="kpiValue">Submitted</p>
+            </div>
+
+            <div className="kpiItem">
+              <p className="kpiLabel">Review Status</p>
+              <p className="kpiValue">
+                {getReviewStatus(result.suspicion_score)}
+              </p>
+            </div>
+          </div>
+
+          <div
+            className={`notice ${
+              result.suspicion_score >= FLAG_THRESHOLD
+                ? "error"
+                : result.suspicion_score >= WARNING_THRESHOLD
+                ? "warn"
+                : "success"
+            }`}
+          >
+            {result.suspicion_score >= FLAG_THRESHOLD
+              ? "Exam submitted successfully, but flagged for admin review due to high suspicion."
+              : result.suspicion_score >= WARNING_THRESHOLD
+              ? "Exam submitted successfully with warning-level suspicion."
+              : "Exam submitted successfully."}
+          </div>
         </div>
       )}
     </div>
