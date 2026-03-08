@@ -5,21 +5,22 @@ import traceback
 from django.conf import settings
 from django.utils import timezone
 
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import permission_classes
+
 from deepface import DeepFace
 from ultralytics import YOLO
 
 from .models import CustomUser, StudentExamAttempt, Exam
 from .serializers import ExamSerializer, AttemptListSerializer
 
-# DeepFace / Tensorflow env settings (keep)
+# DeepFace / Tensorflow env settings
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -34,7 +35,7 @@ def me(request):
     })
 
 
-# ✅ Option A: List exams for dropdown
+# List exams for dropdown
 @api_view(["GET"])
 def list_exams(request):
     exams = Exam.objects.all().order_by("-start_time")
@@ -42,11 +43,10 @@ def list_exams(request):
     return Response(serializer.data)
 
 
-# ✅ Admin dashboard: List all attempts (latest first)
+# Admin dashboard: List all attempts with score + review info
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def admin_list_attempts(request):
-    # Only admins allowed
     if not getattr(request.user, "is_admin", False):
         return Response({"error": "Admin access required"}, status=403)
 
@@ -58,7 +58,8 @@ def admin_list_attempts(request):
     serializer = AttemptListSerializer(attempts, many=True)
     return Response(serializer.data)
 
-# ✅ Start an exam attempt properly (returns attempt_id)
+
+# Start an exam attempt
 @api_view(["POST"])
 def start_attempt(request):
     user_id = request.data.get("user_id")
@@ -80,14 +81,12 @@ def start_attempt(request):
     except Exam.DoesNotExist:
         return Response({"error": "Exam not found"}, status=404)
 
-    # Prevent multiple attempts for the same student+exam due to unique_together
     attempt, created = StudentExamAttempt.objects.get_or_create(
         student=student,
         exam=exam,
         defaults={"status": "ongoing", "suspicion_score": 0.0},
     )
 
-    # If attempt exists but not ongoing, block for now
     if not created and attempt.status != "ongoing":
         return Response(
             {"error": f"Attempt already exists with status '{attempt.status}'"},
@@ -140,7 +139,6 @@ def end_attempt(request):
 class FaceVerifyView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
-    # Load YOLO once (per Django worker process)
     try:
         YOLO_WEIGHTS_PATH = os.path.join(settings.BASE_DIR, "yolov8n.pt")
         yolo_model = YOLO(YOLO_WEIGHTS_PATH)
@@ -149,16 +147,10 @@ class FaceVerifyView(APIView):
         print(f"YOLO load failed: {e}")
         yolo_model = None
 
-    # Config (later move to settings.py)
     FACE_DISTANCE_THRESHOLD = 0.68
-    FLAG_THRESHOLD = 50.0  # if suspicion score passes this, mark attempt flagged
+    FLAG_THRESHOLD = 50.0
 
     def detect_cheating_objects(self, image_path):
-        """
-        Returns:
-          - suspicious_objects: list[str]   (e.g. ["cell phone (0.71)", "book (0.66)"])
-          - person_count: int
-        """
         if self.yolo_model is None:
             return [], 0
 
@@ -173,11 +165,9 @@ class FaceVerifyView(APIView):
                     label = r.names[cls]
                     conf = float(box.conf[0])
 
-                    # Count people
                     if label == "person" and conf > 0.45:
                         person_count += 1
 
-                    # Only objects that imply cheating
                     if label in ["cell phone", "book", "laptop"] and conf > 0.45:
                         suspicious_objects.append(f"{label} ({conf:.2f})")
 
@@ -188,17 +178,8 @@ class FaceVerifyView(APIView):
             return [], 0
 
     def post(self, request):
-        """
-        Preferred request:
-          - attempt_id
-          - live_image
-
-        Backward compatible (old UI):
-          - user_id
-          - live_image
-        """
         attempt_id = request.data.get("attempt_id")
-        user_id = request.data.get("user_id")  # fallback
+        user_id = request.data.get("user_id")
         live_image = request.FILES.get("live_image")
 
         if not live_image:
@@ -207,7 +188,6 @@ class FaceVerifyView(APIView):
         live_path = None
 
         try:
-            # Determine attempt + user
             attempt = None
             user = None
 
@@ -256,13 +236,11 @@ class FaceVerifyView(APIView):
 
             enrolled_path = user.face_photo.path
 
-            # Save temporary live frame
             live_path = os.path.join(settings.MEDIA_ROOT, "temp_live.jpg")
             with open(live_path, "wb+") as f:
                 for chunk in live_image.chunks():
                     f.write(chunk)
 
-            # Face verification
             result = DeepFace.verify(
                 img1_path=enrolled_path,
                 img2_path=live_path,
@@ -276,10 +254,8 @@ class FaceVerifyView(APIView):
             distance = float(result.get("distance", 1.0))
             verified = bool(result.get("verified", False)) or (distance <= self.FACE_DISTANCE_THRESHOLD)
 
-            # Object detection
             suspicious_objects, person_count = self.detect_cheating_objects(live_path)
 
-            # Suspicion scoring
             object_suspicion = 0
             for item in suspicious_objects:
                 if item.startswith("cell phone"):
@@ -309,7 +285,6 @@ class FaceVerifyView(APIView):
                 suspicion_total = float(attempt.suspicion_score)
                 attempt_status = attempt.status
 
-            # Cleanup temp file
             if live_path and os.path.exists(live_path):
                 os.remove(live_path)
 
@@ -322,14 +297,11 @@ class FaceVerifyView(APIView):
                     "attempt_status": attempt_status,
                     "suspicious_objects": suspicious_objects,
                     "person_count": person_count,
-
                     "face_suspicion": face_suspicion,
                     "object_suspicion": object_suspicion,
                     "person_suspicion": person_suspicion,
-
                     "face_verified": verified,
                     "face_distance": distance,
-
                     "message": "Proctoring check complete",
                 }
             )
