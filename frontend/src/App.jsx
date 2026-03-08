@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import Webcam from "react-webcam";
 import axios from "axios";
 import "./App.css";
@@ -10,10 +11,12 @@ const videoConstraints = {
 };
 
 const API_BASE = "http://127.0.0.1:8000";
-const TEST_USER_ID = "2";
 
 function App() {
+  const navigate = useNavigate();
   const webcamRef = useRef(null);
+
+  const storedUser = JSON.parse(localStorage.getItem("me") || "null");
 
   const [imgSrc, setImgSrc] = useState(null);
   const [result, setResult] = useState(null);
@@ -24,7 +27,6 @@ function App() {
   const [examStarted, setExamStarted] = useState(false);
   const [suspicionScore, setSuspicionScore] = useState(0);
 
-  // NEW: exams dropdown + attempt id
   const [exams, setExams] = useState([]);
   const [selectedExamId, setSelectedExamId] = useState("");
   const [attemptId, setAttemptId] = useState(null);
@@ -32,20 +34,26 @@ function App() {
   const intervalRef = useRef(null);
   const isVerifying = useRef(false);
 
-  // ✅ Load exams on page load
+  const logout = () => {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    localStorage.removeItem("me");
+    navigate("/login");
+  };
+
   useEffect(() => {
     const loadExams = async () => {
       try {
         const res = await axios.get(`${API_BASE}/api/exams/`);
         setExams(res.data || []);
         if (res.data?.length) {
-          setSelectedExamId(String(res.data[0].id)); // auto-select first exam
+          setSelectedExamId(String(res.data[0].id));
         }
-      // eslint-disable-next-line no-unused-vars
-      } catch (e) {
+      } catch {
         setError("Failed to load exams. Check backend is running.");
       }
     };
+
     loadExams();
   }, []);
 
@@ -82,13 +90,17 @@ function App() {
       const file = new File([blob], "live_photo.jpg", { type: "image/jpeg" });
 
       const formData = new FormData();
-      formData.append("attempt_id", String(attemptId)); // ✅ NEW (proper)
-      formData.append("user_id", TEST_USER_ID); // fallback safe
+      formData.append("attempt_id", String(attemptId));
+      formData.append("user_id", String(storedUser?.id));
       formData.append("live_image", file);
 
-      const response = await axios.post(`${API_BASE}/api/face-verify/`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const response = await axios.post(
+        `${API_BASE}/api/face-verify/`,
+        formData,
+        {
+          headers: { "Content-Type": "multipart/form-data" },
+        }
+      );
 
       const data = response.data;
       setResult(data);
@@ -97,14 +109,15 @@ function App() {
         setSuspicionScore(data.suspicion_total);
       }
     } catch (err) {
-      setError(err.response?.data?.error || "Verification failed - check console");
+      setError(
+        err.response?.data?.error || "Verification failed - check console"
+      );
     } finally {
       setLoading(false);
       isVerifying.current = false;
     }
   };
 
-  // Periodic verification while exam is running
   useEffect(() => {
     if (!examStarted) return;
 
@@ -119,10 +132,14 @@ function App() {
     return () => clearInterval(intervalRef.current);
   }, [examStarted, capture]);
 
-  // ✅ Start exam properly: create attempt
   const startExam = async () => {
     if (!selectedExamId) {
       setError("Please select an exam first.");
+      return;
+    }
+
+    if (!storedUser?.id) {
+      setError("Logged-in user not found. Please log in again.");
       return;
     }
 
@@ -132,7 +149,7 @@ function App() {
 
     try {
       const res = await axios.post(`${API_BASE}/api/attempts/start/`, {
-        user_id: TEST_USER_ID,
+        user_id: String(storedUser.id),
         exam_id: selectedExamId,
       });
 
@@ -148,7 +165,7 @@ function App() {
 
   const stopExam = async () => {
     if (!attemptId) return;
-  
+
     try {
       await axios.post(`${API_BASE}/api/attempts/end/`, {
         attempt_id: attemptId,
@@ -156,7 +173,7 @@ function App() {
     } catch (e) {
       console.error("Failed to end attempt:", e);
     }
-  
+
     setExamStarted(false);
     clearInterval(intervalRef.current);
     setAttemptId(null);
@@ -186,12 +203,21 @@ function App() {
       <div className="header">
         <div className="titleBlock">
           <h1>AI Examination Monitoring System</h1>
-          <p>Live proctoring demo (Face + Object detection + Suspicion scoring)</p>
+          <p>
+            Live proctoring demo (Face + Object detection + Suspicion scoring)
+          </p>
+          <p className="small" style={{ marginTop: "6px" }}>
+            Logged in as:{" "}
+            <strong>{storedUser?.username || "Unknown User"}</strong>
+          </p>
         </div>
 
         <div className="row">
           {statusBadge()}
           {verificationBadge()}
+          <button className="btn secondary" onClick={logout}>
+            Logout
+          </button>
         </div>
       </div>
 
@@ -200,10 +226,10 @@ function App() {
         <div className="card">
           <h2 className="cardTitle">Live Camera</h2>
           <p className="muted">
-            Select an exam, start attempt, then monitoring will run automatically.
+            Select an exam, start attempt, then monitoring will run
+            automatically.
           </p>
 
-          {/* NEW: Exam dropdown */}
           {!examStarted && (
             <div style={{ marginTop: 10 }}>
               <p className="kpiLabel">Select Exam</p>
@@ -273,7 +299,8 @@ function App() {
 
           {examStarted && suspicionScore >= 30 && (
             <div className="notice warn">
-              ⚠️ Suspicion is high. Please keep only one person in the frame and avoid phones/books.
+              ⚠️ Suspicion is high. Please keep only one person in the frame and
+              avoid phones/books.
             </div>
           )}
         </div>
@@ -290,7 +317,9 @@ function App() {
             <div className="kpiItem">
               <p className="kpiLabel">People Detected</p>
               <p className="kpiValue">
-                {typeof result?.person_count === "number" ? result.person_count : "—"}
+                {typeof result?.person_count === "number"
+                  ? result.person_count
+                  : "—"}
               </p>
             </div>
           </div>
@@ -299,7 +328,9 @@ function App() {
             <div className="kpiItem">
               <p className="kpiLabel">Face Distance</p>
               <p className="kpiValue">
-                {typeof result?.distance === "number" ? result.distance.toFixed(4) : "—"}
+                {typeof result?.distance === "number"
+                  ? result.distance.toFixed(4)
+                  : "—"}
               </p>
               <p className="small">Lower is better (match)</p>
             </div>

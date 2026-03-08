@@ -1,70 +1,105 @@
 import { useState } from "react";
-import { api } from "./api";
+import { useNavigate } from "react-router-dom";
+import axios from "axios";
+import "./App.css";
 
-export default function Login({ onLoginSuccess }) {
+const API_BASE = "http://127.0.0.1:8000";
+
+export default function Login() {
+  const navigate = useNavigate();
+
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState("");
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    setError(null);
+
     setLoading(true);
+    setError("");
 
     try {
-      const res = await api.post("/api/auth/login/", { username, password });
+      // 1. Get JWT token
+      const loginRes = await axios.post(`${API_BASE}/api/auth/login/`, {
+        username,
+        password,
+      });
 
-      localStorage.setItem("access_token", res.data.access);
-      localStorage.setItem("refresh_token", res.data.refresh);
+      const { access, refresh } = loginRes.data;
 
-      // Fetch user profile after login
-      const me = await api.get("/api/auth/me/");
-      localStorage.setItem("me", JSON.stringify(me.data));
+      localStorage.setItem("access_token", access);
+      localStorage.setItem("refresh_token", refresh);
 
-      onLoginSuccess(me.data);
+      // 2. Get logged-in user profile
+      const meRes = await axios.get(`${API_BASE}/api/auth/me/`, {
+        headers: {
+          Authorization: `Bearer ${access}`,
+        },
+      });
+
+      const user = meRes.data;
+      localStorage.setItem("me", JSON.stringify(user));
+
+      // 3. Redirect by role
+      if (user.is_admin) {
+        navigate("/admin");
+      } else {
+        navigate("/");
+      }
     } catch (err) {
-      setError(err.response?.data?.detail || "Login failed");
+      setError(
+        err.response?.data?.detail ||
+          err.response?.data?.error ||
+          "Login failed. Please check your credentials."
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="card" style={{ maxWidth: 420, margin: "60px auto" }}>
-      <h2 className="cardTitle">Login</h2>
-      <p className="muted">Enter your username and password to continue.</p>
-
-      <form onSubmit={handleLogin} style={{ marginTop: 12 }}>
-        <div style={{ marginBottom: 10 }}>
-          <label className="kpiLabel">Username</label>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="input"
-            placeholder="e.g. Abdul"
-            required
-          />
+    <div className="container" style={{ maxWidth: "520px", minHeight: "100vh", display: "flex", alignItems: "center" }}>
+      <div className="card" style={{ width: "100%" }}>
+        <div className="titleBlock" style={{ marginBottom: "1.5rem" }}>
+          <h1>Login</h1>
+          <p>Sign in to access the AI Examination Monitoring System</p>
         </div>
 
-        <div style={{ marginBottom: 10 }}>
-          <label className="kpiLabel">Password</label>
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="input"
-            type="password"
-            placeholder="••••••••"
-            required
-          />
-        </div>
+        <form onSubmit={handleLogin}>
+          <div style={{ marginBottom: "1rem" }}>
+            <label className="kpiLabel">Username</label>
+            <input
+              className="input"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Enter username"
+              required
+            />
+          </div>
 
-        {error && <div className="notice error">Error: {error}</div>}
+          <div style={{ marginBottom: "1rem" }}>
+            <label className="kpiLabel">Password</label>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter password"
+              required
+            />
+          </div>
 
-        <button className="btn" type="submit" disabled={loading}>
-          {loading ? "Logging in..." : "Login"}
-        </button>
-      </form>
+          {error && <div className="notice error">{error}</div>}
+
+          <div className="controls" style={{ marginTop: "1rem" }}>
+            <button className="btn" type="submit" disabled={loading}>
+              {loading ? "Signing in..." : "Login"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
