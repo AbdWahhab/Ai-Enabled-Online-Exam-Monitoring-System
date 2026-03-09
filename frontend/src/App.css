@@ -573,6 +573,16 @@ select:focus {
   margin-top: 2px;
 }
 
+.tableLink {
+  color: var(--primary-dark);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.tableLink:hover {
+  text-decoration: underline;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

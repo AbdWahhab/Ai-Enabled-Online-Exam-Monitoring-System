@@ -36,11 +36,14 @@ export default function AdminDashboard() {
         return;
       }
 
-      const res = await axios.get(`${API_BASE}/api/admin/attempts/?format=json`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const res = await axios.get(
+        `${API_BASE}/api/admin/attempts/?format=json`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
       setAttempts(res.data || []);
     } catch (e) {
@@ -70,7 +73,11 @@ export default function AdminDashboard() {
         </div>
 
         <div className="row">
-          <button className="btn secondary" onClick={loadAttempts} disabled={loading}>
+          <button
+            className="btn secondary"
+            onClick={loadAttempts}
+            disabled={loading}
+          >
             {loading ? "Refreshing..." : "Refresh Now"}
           </button>
         </div>
@@ -103,7 +110,14 @@ export default function AdminDashboard() {
             <tbody>
               {attempts.map((a) => (
                 <tr key={a.id}>
-                  <td>{a.id}</td>
+                  <td>
+                    <a
+                      href={`/admin/attempt/${a.id}`}
+                      style={{ fontWeight: "700" }}
+                    >
+                      {a.id}
+                    </a>
+                  </td>
 
                   <td>
                     <div className="tableMain">{a.student_username}</div>
@@ -152,8 +166,8 @@ export default function AdminDashboard() {
         )}
 
         <p className="small" style={{ marginTop: 12 }}>
-          Review status is based on suspicion score:
-          {" "}0–29 Safe, 30–49 Warning, 50+ Flagged for review.
+          Review status is based on suspicion score: 0–29 Safe, 30–49 Warning,
+          50+ Flagged for review.
         </p>
       </div>
     </div>
