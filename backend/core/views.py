@@ -14,8 +14,8 @@ from rest_framework.permissions import IsAuthenticated
 from deepface import DeepFace
 from ultralytics import YOLO
 
-from .models import CustomUser, StudentExamAttempt, Exam
-from .serializers import ExamSerializer, AttemptListSerializer
+from .models import CustomUser, StudentExamAttempt, Exam, ProctoringEvent
+from .serializers import ExamSerializer, AttemptListSerializer, ProctoringEventSerializer
 
 # DeepFace / Tensorflow env settings
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
@@ -58,6 +58,21 @@ def admin_list_attempts(request):
     serializer = AttemptListSerializer(attempts, many=True)
     return Response(serializer.data)
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_attempt_events(request, attempt_id):
+    if not getattr(request.user, "is_admin", False):
+        return Response({"error": "Admin access Required"}, status=403)
+    
+    try:
+        attempt = StudentExamAttempt.objects.get(id=attempt_id)
+    except StudentExamAttempt.DoesNotExist:
+        return Response({"error": "Attempt not found"}, status=404)
+    
+    events = attempt.events.all().order_by("-timestamp")
+    
+    serializer = ProctoringEventSerializer(events, many=True)
+    return Response(serializer.data)
 
 # Start an exam attempt
 @api_view(["POST"])
@@ -284,6 +299,20 @@ class FaceVerifyView(APIView):
                 attempt.save(update_fields=["suspicion_score", "status"])
                 suspicion_total = float(attempt.suspicion_score)
                 attempt_status = attempt.status
+
+                # Save proctoring event
+                ProctoringEvent.objects.create(
+                    attempt=attempt,
+                    verified=verified,
+                    face_distance=distance,
+                    person_count=person_count,
+                    suspicious_objects=suspicious_objects,
+                    suspicion_delta=float(suspicion_delta),
+                    suspicion_total=float(suspicion_total),
+                    face_suspicion=float(face_suspicion),
+                    object_suspicion=float(object_suspicion),
+                    person_suspicion=float(person_suspicion),
+                )
 
             if live_path and os.path.exists(live_path):
                 os.remove(live_path)

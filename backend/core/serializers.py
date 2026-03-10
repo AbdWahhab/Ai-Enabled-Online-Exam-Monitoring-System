@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import CustomUser, Exam, StudentExamAttempt, StudentAnswer
+from .models import (
+    CustomUser,
+    Exam,
+    StudentExamAttempt,
+    StudentAnswer,
+    ProctoringEvent,
+)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -72,3 +78,22 @@ class AttemptListSerializer(serializers.ModelSerializer):
         if score >= 30:
             return "Warning"
         return "Safe"
+
+
+class ProctoringEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProctoringEvent
+        fields = [
+            "id",
+            "attempt",
+            "timestamp",
+            "verified",
+            "face_distance",
+            "person_count",
+            "suspicious_objects",
+            "suspicion_delta",
+            "suspicion_total",
+            "face_suspicion",
+            "object_suspicion",
+            "person_suspicion",
+        ]

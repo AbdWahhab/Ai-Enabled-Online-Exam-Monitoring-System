@@ -19,11 +19,18 @@ function statusClass(status) {
   return "badge";
 }
 
+function formatDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+
 export default function AttemptReview() {
   const { id } = useParams();
   const navigate = useNavigate();
 
   const [attempt, setAttempt] = useState(null);
+  const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -40,23 +47,45 @@ export default function AttemptReview() {
         return;
       }
 
-      const res = await axios.get(`${API_BASE}/api/admin/attempts/?format=json`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const attemptsPromise = axios.get(
+        `${API_BASE}/api/admin/attempts/?format=json`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
-      const found = (res.data || []).find((a) => String(a.id) === String(id));
+      const eventsPromise = axios.get(
+        `${API_BASE}/api/admin/attempts/${id}/events/`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const [attemptsRes, eventsRes] = await Promise.all([
+        attemptsPromise,
+        eventsPromise,
+      ]);
+
+      const found = (attemptsRes.data || []).find(
+        (a) => String(a.id) === String(id)
+      );
 
       if (!found) {
         setError("Attempt not found.");
+        setAttempt(null);
       } else {
         setAttempt(found);
       }
+
+      setEvents(Array.isArray(eventsRes.data) ? eventsRes.data : []);
     } catch (e) {
       setError(
-        e.response?.data?.error ||
-          e.response?.data?.detail ||
+        e?.response?.data?.error ||
+          e?.response?.data?.detail ||
           "Failed to load attempt review."
       );
     } finally {
@@ -90,7 +119,7 @@ export default function AttemptReview() {
         <>
           <div className="grid">
             <div className="card">
-              <h2 className="cardTitle">Student & Exam Details</h2>
+              <h2 className="cardTitle">Student &amp; Exam Details</h2>
 
               <div className="kpi">
                 <div className="kpiItem">
@@ -213,14 +242,61 @@ export default function AttemptReview() {
                 : "This attempt appears safe based on current AI scoring."}
             </div>
           </div>
+
+          <div
+            className="card"
+            style={{ marginTop: "2rem", overflowX: "auto" }}
+          >
+            <h2 className="cardTitle">Proctoring Events Timeline</h2>
+
+            {events.length === 0 ? (
+              <p className="muted">No proctoring events found for this attempt.</p>
+            ) : (
+              <table className="adminTable">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Verified</th>
+                    <th>Face Distance</th>
+                    <th>People</th>
+                    <th>Suspicious Objects</th>
+                    <th>Delta</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map((event) => (
+                    <tr key={event.id}>
+                      <td>{formatDate(event.timestamp)}</td>
+                      <td>
+                        <span
+                          className={event.verified ? "badge good" : "badge bad"}
+                        >
+                          {event.verified ? "Verified" : "Mismatch"}
+                        </span>
+                      </td>
+                      <td>
+                        {typeof event.face_distance === "number"
+                          ? Number(event.face_distance).toFixed(4)
+                          : "—"}
+                      </td>
+                      <td>{event.person_count ?? "—"}</td>
+                      <td>
+                        {Array.isArray(event.suspicious_objects) &&
+                        event.suspicious_objects.length > 0
+                          ? event.suspicious_objects.join(", ")
+                          : "None"}
+                      </td>
+                      <td>{Number(event.suspicion_delta || 0).toFixed(1)}</td>
+                      <td>{Number(event.suspicion_total || 0).toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </>
       )}
     </div>
   );
-}
-
-function formatDate(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString();
 }

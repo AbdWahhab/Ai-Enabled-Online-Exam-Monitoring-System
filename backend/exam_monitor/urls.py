@@ -14,7 +14,8 @@ from core.views import (
     start_attempt,
     end_attempt,
     admin_list_attempts,
-    me,  # ✅ new
+    admin_attempt_events,
+    me,
 )
 
 urlpatterns = [
@@ -35,4 +36,6 @@ urlpatterns = [
     path('api/admin/attempts/', admin_list_attempts, name='admin-attempts'),
 
     path('api/face-verify/', FaceVerifyView.as_view(), name='face-verify'),
+    
+    path('api/admin/attempts/<int:attempt_id>/events/', admin_attempt_events, name="admin-attempt-events"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
