@@ -1,0 +1,274 @@
+import { useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { api } from "./api";
+import "./App.css";
+
+function reviewClass(reviewStatus) {
+  if (reviewStatus === "Flagged for review") return "badge bad";
+  if (reviewStatus === "Warning") return "badge warn";
+  if (reviewStatus === "Safe") return "badge good";
+  return "badge";
+}
+
+function statusClass(status) {
+  if (status === "flagged") return "badge bad";
+  if (status === "ongoing") return "badge warn";
+  if (status === "submitted") return "badge good";
+  return "badge";
+}
+
+function formatDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+
+export default function AttemptReview() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const [attempt, setAttempt] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadAttempt = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const [attemptsRes, eventsRes] = await Promise.all([
+        api.get("/api/admin/attempts/?format=json"),
+        api.get(`/api/admin/attempts/${id}/events/`),
+      ]);
+
+      const found = (attemptsRes.data || []).find(
+        (a) => String(a.id) === String(id)
+      );
+
+      if (!found) {
+        setError("Attempt not found.");
+        setAttempt(null);
+      } else {
+        setAttempt(found);
+      }
+
+      setEvents(Array.isArray(eventsRes.data) ? eventsRes.data : []);
+    } catch (e) {
+      setError(
+        e?.response?.data?.error ||
+          e?.response?.data?.detail ||
+          "Failed to load attempt review."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAttempt();
+  }, [id]);
+
+  return (
+    <div className="container">
+      <div className="header">
+        <div className="titleBlock">
+          <h1>Attempt Review</h1>
+          <p>Detailed review of exam result and suspicion status</p>
+        </div>
+
+        <div className="row">
+          <button className="btn secondary" onClick={() => navigate("/admin")}>
+            Back to Dashboard
+          </button>
+        </div>
+      </div>
+
+      {loading && <div className="notice">Loading attempt details...</div>}
+      {error && <div className="notice error">{error}</div>}
+
+      {attempt && (
+        <>
+          <div className="grid">
+            <div className="card">
+              <h2 className="cardTitle">Student &amp; Exam Details</h2>
+
+              <div className="kpi">
+                <div className="kpiItem">
+                  <p className="kpiLabel">Attempt ID</p>
+                  <p className="kpiValue">{attempt.id}</p>
+                </div>
+
+                <div className="kpiItem">
+                  <p className="kpiLabel">Student</p>
+                  <p className="kpiValue">{attempt.student_username}</p>
+                </div>
+
+                <div className="kpiItem">
+                  <p className="kpiLabel">Exam</p>
+                  <p className="kpiValue">{attempt.exam_title}</p>
+                </div>
+              </div>
+
+              <div className="kpi">
+                <div className="kpiItem">
+                  <p className="kpiLabel">Start Time</p>
+                  <p className="tableMain">{formatDate(attempt.start_time)}</p>
+                </div>
+
+                <div className="kpiItem">
+                  <p className="kpiLabel">End Time</p>
+                  <p className="tableMain">
+                    {attempt.end_time ? formatDate(attempt.end_time) : "—"}
+                  </p>
+                </div>
+
+                <div className="kpiItem">
+                  <p className="kpiLabel">Duration (min)</p>
+                  <p className="kpiValue">
+                    {typeof attempt.duration_minutes === "number"
+                      ? attempt.duration_minutes.toFixed(2)
+                      : "—"}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2 className="cardTitle">Result Summary</h2>
+
+              <div className="kpi">
+                <div className="kpiItem">
+                  <p className="kpiLabel">Score</p>
+                  <p className="kpiValue">
+                    {attempt.correct_answers} / {attempt.total_questions}
+                  </p>
+                </div>
+
+                <div className="kpiItem">
+                  <p className="kpiLabel">Percentage</p>
+                  <p className="kpiValue">
+                    {Number(attempt.percentage || 0).toFixed(2)}%
+                  </p>
+                </div>
+              </div>
+
+              <div className="kpi">
+                <div className="kpiItem">
+                  <p className="kpiLabel">Attempt Status</p>
+                  <div style={{ marginTop: "8px" }}>
+                    <span className={statusClass(attempt.status)}>
+                      {attempt.status}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="kpiItem">
+                  <p className="kpiLabel">Review Status</p>
+                  <div style={{ marginTop: "8px" }}>
+                    <span className={reviewClass(attempt.review_status)}>
+                      {attempt.review_status}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginTop: "2rem" }}>
+            <h2 className="cardTitle">AI Proctoring Review</h2>
+
+            <div className="kpi">
+              <div className="kpiItem">
+                <p className="kpiLabel">Suspicion Score</p>
+                <p className="kpiValue">
+                  {Number(attempt.suspicion_score || 0).toFixed(1)}
+                </p>
+              </div>
+
+              <div className="kpiItem">
+                <p className="kpiLabel">Assessment</p>
+                <p className="tableMain">
+                  {attempt.review_status === "Flagged for review"
+                    ? "High suspicion detected. Manual review recommended."
+                    : attempt.review_status === "Warning"
+                    ? "Moderate suspicion detected. Check if needed."
+                    : "No significant suspicious behavior detected."}
+                </p>
+              </div>
+            </div>
+
+            <div
+              className={`notice ${
+                attempt.review_status === "Flagged for review"
+                  ? "error"
+                  : attempt.review_status === "Warning"
+                  ? "warn"
+                  : "success"
+              }`}
+            >
+              {attempt.review_status === "Flagged for review"
+                ? "This attempt has been flagged for admin review due to high suspicion score."
+                : attempt.review_status === "Warning"
+                ? "This attempt has warning-level suspicion and may need attention."
+                : "This attempt appears safe based on current AI scoring."}
+            </div>
+          </div>
+
+          <div
+            className="card"
+            style={{ marginTop: "2rem", overflowX: "auto" }}
+          >
+            <h2 className="cardTitle">Proctoring Events Timeline</h2>
+
+            {events.length === 0 ? (
+              <p className="muted">No proctoring events found for this attempt.</p>
+            ) : (
+              <table className="adminTable">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Verified</th>
+                    <th>Face Distance</th>
+                    <th>People</th>
+                    <th>Suspicious Objects</th>
+                    <th>Delta</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map((event) => (
+                    <tr key={event.id}>
+                      <td>{formatDate(event.timestamp)}</td>
+                      <td>
+                        <span
+                          className={event.verified ? "badge good" : "badge bad"}
+                        >
+                          {event.verified ? "Verified" : "Mismatch"}
+                        </span>
+                      </td>
+                      <td>
+                        {typeof event.face_distance === "number"
+                          ? Number(event.face_distance).toFixed(4)
+                          : "—"}
+                      </td>
+                      <td>{event.person_count ?? "—"}</td>
+                      <td>
+                        {Array.isArray(event.suspicious_objects) &&
+                        event.suspicious_objects.length > 0
+                          ? event.suspicious_objects.join(", ")
+                          : "None"}
+                      </td>
+                      <td>{Number(event.suspicion_delta || 0).toFixed(1)}</td>
+                      <td>{Number(event.suspicion_total || 0).toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

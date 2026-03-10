@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import axios from "axios";
+import { useNavigate } from "react-router-dom";
+import { api } from "./api";
 import "./App.css";
-
-const API_BASE = "http://127.0.0.1:8000";
 
 function statusClass(status) {
   if (status === "flagged") return "badge bad";
@@ -11,7 +10,22 @@ function statusClass(status) {
   return "badge";
 }
 
+function reviewClass(reviewStatus) {
+  if (reviewStatus === "Flagged for review") return "badge bad";
+  if (reviewStatus === "Warning") return "badge warn";
+  if (reviewStatus === "Safe") return "badge good";
+  return "badge";
+}
+
+function formatDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString();
+}
+
 export default function AdminDashboard() {
+  const navigate = useNavigate();
+
   const [attempts, setAttempts] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -19,21 +33,31 @@ export default function AdminDashboard() {
   const loadAttempts = async () => {
     setLoading(true);
     setError(null);
+
     try {
-      const res = await axios.get(`${API_BASE}/api/admin/attempts/?format=json`);
+      const res = await api.get("/api/admin/attempts/?format=json");
       setAttempts(res.data || []);
-    // eslint-disable-next-line no-unused-vars
     } catch (e) {
-      setError("Failed to load attempts. Is backend running?");
+      setError(
+        e.response?.data?.error ||
+          e.response?.data?.detail ||
+          "Failed to load admin results."
+      );
     } finally {
       setLoading(false);
     }
   };
 
+  const logout = () => {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    localStorage.removeItem("me");
+    navigate("/login");
+  };
+
   useEffect(() => {
     loadAttempts();
 
-    // auto refresh every 5 seconds
     const t = setInterval(loadAttempts, 5000);
     return () => clearInterval(t);
   }, []);
@@ -42,13 +66,16 @@ export default function AdminDashboard() {
     <div className="container">
       <div className="header">
         <div className="titleBlock">
-          <h1>Admin Dashboard</h1>
-          <p>Live attempts monitoring (auto refresh every 5 seconds)</p>
+          <h1>Admin Result Dashboard</h1>
+          <p>Live monitoring of exam attempts, scores, and suspicion reviews</p>
         </div>
 
         <div className="row">
           <button className="btn secondary" onClick={loadAttempts} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh Now"}
+          </button>
+          <button className="btn secondary" onClick={logout}>
+            Logout
           </button>
         </div>
       </div>
@@ -56,45 +83,80 @@ export default function AdminDashboard() {
       {error && <div className="notice error">{error}</div>}
 
       <div className="card" style={{ overflowX: "auto" }}>
-        <h2 className="cardTitle">Exam Attempts</h2>
+        <h2 className="cardTitle">Student Exam Attempts</h2>
 
         {attempts.length === 0 ? (
           <p className="muted">No attempts found.</p>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+          <table className="adminTable">
             <thead>
-              <tr style={{ textAlign: "left" }}>
-                <th style={thStyle}>Attempt ID</th>
-                <th style={thStyle}>Student</th>
-                <th style={thStyle}>Exam</th>
-                <th style={thStyle}>Status</th>
-                <th style={thStyle}>Suspicion</th>
-                <th style={thStyle}>Start Time</th>
-                <th style={thStyle}>End Time</th>
-                <th style={thStyle}>Duration (min)</th>
+              <tr>
+                <th>Attempt ID</th>
+                <th>Student</th>
+                <th>Exam</th>
+                <th>Status</th>
+                <th>Score</th>
+                <th>Percentage</th>
+                <th>Suspicion</th>
+                <th>Review Status</th>
+                <th>Duration (min)</th>
+                <th>Start Time</th>
+                <th>End Time</th>
               </tr>
             </thead>
             <tbody>
               {attempts.map((a) => (
-                <tr key={a.id} style={{ borderTop: "1px solid rgba(148,163,184,0.15)" }}>
-                  <td style={tdStyle}>{a.id}</td>
-                  <td style={tdStyle}>
-                    {a.student_username} <span className="small">(id: {a.student})</span>
+                <tr key={a.id}>
+                  <td>
+                    <button
+                      className="btn secondary"
+                      style={{ padding: "6px 12px", fontSize: "13px" }}
+                      onClick={() => navigate(`/admin/attempt/${a.id}`)}
+                    >
+                      View #{a.id}
+                    </button>
                   </td>
-                  <td style={tdStyle}>
-                    {a.exam_title} <span className="small">(id: {a.exam})</span>
+
+                  <td>
+                    <div className="tableMain">{a.student_username}</div>
+                    <div className="tableSub">ID: {a.student}</div>
                   </td>
-                  <td style={tdStyle}>
+
+                  <td>
+                    <div className="tableMain">{a.exam_title}</div>
+                    <div className="tableSub">ID: {a.exam}</div>
+                  </td>
+
+                  <td>
                     <span className={statusClass(a.status)}>{a.status}</span>
                   </td>
-                  <td style={tdStyle}>
-                    <b>{Number(a.suspicion_score || 0).toFixed(1)}</b>
+
+                  <td>
+                    <strong>
+                      {a.correct_answers} / {a.total_questions}
+                    </strong>
                   </td>
-                  <td style={tdStyle}>{formatDate(a.start_time)}</td>
-                  <td style={tdStyle}>{a.end_time ? formatDate(a.end_time) : "—"}</td>
-                  <td style={tdStyle}>
-                    {typeof a.duration_minutes === "number" ? a.duration_minutes.toFixed(1) : "—"}
+
+                  <td>{Number(a.percentage || 0).toFixed(2)}%</td>
+
+                  <td>
+                    <strong>{Number(a.suspicion_score || 0).toFixed(1)}</strong>
                   </td>
+
+                  <td>
+                    <span className={reviewClass(a.review_status)}>
+                      {a.review_status}
+                    </span>
+                  </td>
+
+                  <td>
+                    {typeof a.duration_minutes === "number"
+                      ? a.duration_minutes.toFixed(2)
+                      : "—"}
+                  </td>
+
+                  <td>{formatDate(a.start_time)}</td>
+                  <td>{a.end_time ? formatDate(a.end_time) : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -102,31 +164,9 @@ export default function AdminDashboard() {
         )}
 
         <p className="small" style={{ marginTop: 12 }}>
-          Note: Duration is calculated as end_time - start_time. If you end attempts days later,
-          duration will be large.
+          Review status is based on suspicion score: 0–29 Safe, 30–49 Warning, 50+ Flagged for review.
         </p>
       </div>
     </div>
   );
-}
-
-const thStyle = {
-  padding: "10px 10px",
-  fontSize: 12,
-  color: "#94a3b8",
-  fontWeight: 700,
-  whiteSpace: "nowrap",
-};
-
-const tdStyle = {
-  padding: "12px 10px",
-  fontSize: 14,
-  color: "#e2e8f0",
-  whiteSpace: "nowrap",
-};
-
-function formatDate(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString();
 }
